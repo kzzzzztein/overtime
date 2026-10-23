@@ -116,7 +116,7 @@ hr{border:0;border-top:1px solid var(--line);margin:20px 0}
       <div class="foot"><button id="csv">Export CSV</button><button id="word" class="primary" style="width:auto">Download Word form</button></div>
     </main>
   </div>
-  <div class="sub" style="text-align:center;margin-top:28px">Version 4 · Oct 23, 2026 · Word form: official QD-HUM-06 Rev 0 template</div>
+  <div class="sub" style="text-align:center;margin-top:28px">Version 5 · Oct 23, 2026 · Word form: official QD-HUM-06 Rev 0 template</div>
 </div>
 
 <dialog id="settings">
@@ -370,7 +370,7 @@ function fillTemplate(xml, rows, info, DP, XS) {
   // one row per entry, cloned from the template's blank row
   const proto = trs[2].cloneNode(true), totalRow = trs[totIdx];
   for (let i = 2; i < totIdx; i++) tbl.removeChild(trs[i]);
-  const th = q(proto, 'trHeight')[0]; if (th) th.setAttributeNS(WNS, 'w:val', '380');
+  const th = q(proto, 'trHeight')[0]; if (th) th.setAttributeNS(WNS, 'w:val', '340');
   rows.forEach(r => {
     const tr = proto.cloneNode(true), c = cells(tr);
     [tr, ...Array.from(tr.getElementsByTagName('*'))].forEach(el => Array.from(el.attributes).filter(a => a.namespaceURI === W14).forEach(a => el.removeAttributeNode(a)));
@@ -381,10 +381,43 @@ function fillTemplate(xml, rows, info, DP, XS) {
     tbl.insertBefore(tr, totalRow);
   });
 
+  // pagination: never split a row across pages, and keep the totals + signature block together
+  const all = kids(tbl, 'tr'), firstFoot = all.indexOf(totalRow);
+  const noSplit = tr => {
+    let pr = kids(tr, 'trPr')[0];
+    if (!pr) { pr = doc.createElementNS(WNS, 'w:trPr'); tr.insertBefore(pr, tr.firstChild); }
+    if (!kids(pr, 'cantSplit').length) pr.appendChild(doc.createElementNS(WNS, 'w:cantSplit'));
+  };
+  const keepNext = tr => q(tr, 'p').forEach(p => {
+    let pp = kids(p, 'pPr')[0];
+    if (!pp) { pp = doc.createElementNS(WNS, 'w:pPr'); p.insertBefore(pp, p.firstChild); }
+    if (!kids(pp, 'keepNext').length) { const k = doc.createElementNS(WNS, 'w:keepNext'), st = kids(pp, 'pStyle')[0]; pp.insertBefore(k, st ? st.nextSibling : pp.firstChild); }
+  });
+  all.forEach((tr, i) => { if (i >= 2) noSplit(tr); });
+  all.forEach((tr, i) => { if (i >= firstFoot - 1 && i < all.length - 1) keepNext(tr); });
+
   // totals (all hours count as Regular OT; ND box stays blank)
   const reg = rows.reduce((s, r) => s + r.mins, 0), tp = P(cells(totalRow)[0])[0];
   const runs = q(tp, 'r'), last = runs[runs.length - 1];
   tp.appendChild(mkRun(q(last, 'rPr')[0] || runRPr(tp), hm(reg)));
+  // the template ends with several blank spacer lines; once the table fills the page they spill onto an empty page, so keep one 1pt line
+  let nx = tbl.nextSibling, spacer = null;
+  while (nx) {
+    const cur = nx; nx = nx.nextSibling;
+    if (cur.localName !== 'p') continue;
+    const blank = T(cur).every(t => t.textContent.trim() === '') && !q(cur, 'drawing').length && !q(cur, 'sectPr').length && !q(cur, 'br').length;
+    if (!blank) continue;
+    if (spacer) cur.parentNode.removeChild(cur); else spacer = cur;
+  }
+  if (spacer) {
+    Array.from(spacer.childNodes).forEach(c => { if (c.localName !== 'pPr') spacer.removeChild(c); });
+    let pp = kids(spacer, 'pPr')[0]; if (!pp) { pp = doc.createElementNS(WNS, 'w:pPr'); spacer.insertBefore(pp, spacer.firstChild); }
+    Array.from(pp.childNodes).forEach(c => pp.removeChild(c));
+    const sp = doc.createElementNS(WNS, 'w:spacing');
+    [['before', '0'], ['after', '0'], ['line', '20'], ['lineRule', 'exact']].forEach(([k, v]) => sp.setAttributeNS(WNS, 'w:' + k, v));
+    const rp = doc.createElementNS(WNS, 'w:rPr'), sz = doc.createElementNS(WNS, 'w:sz'); sz.setAttributeNS(WNS, 'w:val', '2');
+    rp.appendChild(sz); pp.appendChild(sp); pp.appendChild(rp);
+  }
   const out = new XS().serializeToString(doc);
   return out.startsWith('<?xml') ? out : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n' + out;
 }
